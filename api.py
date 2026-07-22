@@ -10,7 +10,12 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-import model
+print("DEBUG USE_MOCK_MODEL =", repr(os.getenv("USE_MOCK_MODEL")))
+
+if os.getenv("USE_MOCK_MODEL", "false").lower() == "true":
+    import mock_model as model
+else:
+    import model
 
 ARTIFACTS_DIR = os.environ.get("ARTIFACTS_DIR", "artifacts")
 
