@@ -7,3 +7,4 @@ uvicorn
 streamlit
 pytest
 requests
+scikit-learn
