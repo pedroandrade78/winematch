@@ -69,27 +69,37 @@ MODIFIER_BLEND_WEIGHT = 0.35  # how much the semantic modifier shifts the query 
 
 def load_sbert_model(model_name: str = MODEL_NAME) -> SentenceTransformer:
     """Load a pretrained sentence-transformers model."""
-    raise NotImplementedError
+    return SentenceTransformer(model_name)
 
 
 def generate_embeddings(texts: pd.Series, model: SentenceTransformer) -> np.ndarray:
     """Encode a series of text into a normalized (n_samples, embedding_dim) array."""
-    raise NotImplementedError
+    embeddings = model.encode(
+        texts.tolist(),
+        show_progress_bar=True,
+        normalize_embeddings=True,  # so inner product == cosine similarity
+    )
+    return np.asarray(embeddings, dtype="float32")
 
 
 def build_faiss_index(embeddings: np.ndarray) -> faiss.Index:
     """Build a flat inner-product FAISS index (cosine similarity, since embeddings are normalized)."""
-    raise NotImplementedError
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatIP(dim)
+    index.add(embeddings)
+    return index
 
 
 def search_index(index: faiss.Index, query_vector: np.ndarray, top_k: int = 5):
     """Return (scores, indices) of the top_k nearest neighbours to query_vector."""
-    raise NotImplementedError
+    query_vector = np.asarray(query_vector, dtype="float32").reshape(1, -1)
+    scores, indices = index.search(query_vector, top_k)
+    return scores[0], indices[0]
 
 
 def _embed_text(text: str) -> np.ndarray:
     """Embed a single piece of text using the loaded SBERT model."""
-    raise NotImplementedError
+    return np.asarray(_model.encode([text], normalize_embeddings=True)[0])
 
 
 # ---------------------------------------------------------------------
@@ -103,7 +113,19 @@ def classify_structured_modifier(modifier_text: str, threshold: float = STRUCTUR
     matching, so synonyms and rephrasings are picked up automatically.
     Returns (column, ascending) or None if it doesn't match closely enough.
     """
-    raise NotImplementedError
+    anchor_items = list(STRUCTURED_ANCHORS.items())
+    anchor_texts = [info["text"] for _, info in anchor_items]
+
+    vectors = _model.encode(anchor_texts + [modifier_text], normalize_embeddings=True)
+    anchor_vecs, query_vec = np.asarray(vectors[:-1]), np.asarray(vectors[-1])
+
+    scores = anchor_vecs @ query_vec
+    best_idx = int(np.argmax(scores))
+
+    if scores[best_idx] >= threshold:
+        _, info = anchor_items[best_idx]
+        return info["column"], info["ascending"]
+    return None
 
 
 def parse_query(raw_query: str):
@@ -116,12 +138,55 @@ def parse_query(raw_query: str):
             "semantic_modifier": free-form style text or None,
         }
     """
-    raise NotImplementedError
+    parts = [p.strip() for p in raw_query.split("+")]
+    identifier = parts[0]
+    modifier_text = " ".join(parts[1:]).strip()
+
+    modifiers = {"sort_by": None, "ascending": None, "hard_filters": {}, "semantic_modifier": None}
+    if not modifier_text:
+        return identifier, modifiers
+
+    m = re.search(r"under \$?(\d+(\.\d+)?)", modifier_text, re.IGNORECASE)
+    if m:
+        modifiers["hard_filters"]["price_max"] = float(m.group(1))
+
+    m = re.search(r"over \$?(\d+(\.\d+)?)", modifier_text, re.IGNORECASE)
+    if m:
+        modifiers["hard_filters"]["price_min"] = float(m.group(1))
+
+    m = re.search(r"(\d+)\+?\s*points", modifier_text, re.IGNORECASE)
+    if m:
+        modifiers["hard_filters"]["min_points"] = int(m.group(1))
+
+    structured = classify_structured_modifier(modifier_text)
+    if structured:
+        modifiers["sort_by"], modifiers["ascending"] = structured
+    else:
+        # not about price/rating -> treat as a descriptive style modifier
+        # (sweet, fruity, oaky, high alcohol, tannic, crisp, ...)
+        modifiers["semantic_modifier"] = modifier_text
+
+    return identifier, modifiers
 
 
 def apply_filters(candidates: pd.DataFrame, filters: dict) -> pd.DataFrame:
     """Apply optional hard filters: price_min, price_max, variety, country, min_points."""
-    raise NotImplementedError
+    if not filters:
+        return candidates
+
+    df = candidates
+    if filters.get("price_min") is not None:
+        df = df[df["price"] >= filters["price_min"]]
+    if filters.get("price_max") is not None:
+        df = df[df["price"] <= filters["price_max"]]
+    if filters.get("variety"):
+        df = df[df["variety"].str.lower() == filters["variety"].lower()]
+    if filters.get("country"):
+        df = df[df["country"].str.lower() == filters["country"].lower()]
+    if filters.get("min_points") is not None:
+        df = df[df["points"] >= filters["min_points"]]
+
+    return df
 
 
 def _resolve_query_vector(identifier: str, semantic_modifier: str = None):
@@ -133,7 +198,37 @@ def _resolve_query_vector(identifier: str, semantic_modifier: str = None):
     A semantic_modifier (e.g. "sweet and fruity") is embedded separately and
     blended into the base vector so the search is pulled toward that style.
     """
-    raise NotImplementedError
+    identifier = identifier.strip()
+    exclude_id = None
+    base_vector = None
+
+    if identifier.isdigit():
+        wine_id = int(identifier)
+        matches = _metadata.index[_metadata["wine_id"] == wine_id]
+        if len(matches) > 0:
+            row_pos = int(matches[0])
+            base_vector = _index.reconstruct(row_pos)
+            exclude_id = wine_id
+
+    if base_vector is None:
+        title_matches = _metadata[_metadata["title"].str.contains(identifier, case=False, na=False)]
+        if not title_matches.empty:
+            row_pos = int(title_matches.index[0])
+            base_vector = _index.reconstruct(row_pos)
+            exclude_id = int(title_matches.iloc[0]["wine_id"])
+
+    if base_vector is None:
+        base_vector = _embed_text(identifier)
+
+    if semantic_modifier:
+        mod_vector = _embed_text(semantic_modifier)
+        combined = (1 - MODIFIER_BLEND_WEIGHT) * np.asarray(base_vector) + MODIFIER_BLEND_WEIGHT * mod_vector
+        norm = np.linalg.norm(combined)
+        if norm > 0:
+            combined = combined / norm
+        return combined, exclude_id
+
+    return base_vector, exclude_id
 
 
 # ---------------------------------------------------------------------
@@ -148,7 +243,31 @@ def recommend(query: str, top_k: int = 5, filters: dict = None) -> pd.DataFrame:
     "109 + low price".
     `filters` (optional) are hard filters that override/extend parsed modifiers.
     """
-    raise NotImplementedError
+    if _index is None or _metadata is None or _model is None:
+        raise RuntimeError("Artifacts not loaded. Call load_artifacts() first.")
+
+    identifier, modifiers = parse_query(query)
+    query_vector, exclude_id = _resolve_query_vector(identifier, modifiers["semantic_modifier"])
+
+    fetch_k = max(top_k * 5, 20)
+    scores, indices = search_index(_index, query_vector, top_k=fetch_k)
+
+    valid = indices >= 0
+    candidates = _metadata.iloc[indices[valid]].copy()
+    candidates["similarity"] = scores[valid]
+
+    if exclude_id is not None:
+        candidates = candidates[candidates["wine_id"] != exclude_id]
+
+    combined_filters = {**modifiers["hard_filters"], **(filters or {})}
+    candidates = apply_filters(candidates, combined_filters)
+
+    if modifiers["sort_by"]:
+        candidates = candidates.sort_values(modifiers["sort_by"], ascending=modifiers["ascending"])
+    else:
+        candidates = candidates.sort_values("similarity", ascending=False)
+
+    return candidates.head(top_k)
 
 
 # ---------------------------------------------------------------------
@@ -157,28 +276,61 @@ def recommend(query: str, top_k: int = 5, filters: dict = None) -> pd.DataFrame:
 
 def build_model(df: pd.DataFrame, artifacts_dir: str, model_name: str = MODEL_NAME) -> None:
     """Full model pipeline: embed text_corpus -> build FAISS index -> save artifacts."""
-    raise NotImplementedError
+    model = load_sbert_model(model_name)
+    embeddings = generate_embeddings(df["text_corpus"], model)
+    index = build_faiss_index(embeddings)
+    save_artifacts(index, df, artifacts_dir, model_name=model_name)
 
 
 def save_artifacts(index: faiss.Index, metadata: pd.DataFrame, artifacts_dir: str, model_name: str = MODEL_NAME) -> None:
     """Persist FAISS index, metadata table, and version info to disk."""
-    raise NotImplementedError
+    os.makedirs(artifacts_dir, exist_ok=True)
+
+    faiss.write_index(index, os.path.join(artifacts_dir, "index.faiss"))
+    metadata.to_parquet(os.path.join(artifacts_dir, "metadata.parquet"), index=False)
+
+    version_info = {
+        "model_name": model_name,
+        "num_wines": len(metadata),
+        "embedding_dim": index.d,
+    }
+    with open(os.path.join(artifacts_dir, "version.json"), "w") as f:
+        json.dump(version_info, f, indent=2)
 
 
 def load_artifacts(artifacts_dir: str) -> None:
     """Load FAISS index, metadata table, and SBERT model into module-level state for serving."""
-    raise NotImplementedError
+    global _index, _metadata, _model
+
+    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
+    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
+
+    with open(os.path.join(artifacts_dir, "version.json")) as f:
+        version_info = json.load(f)
+
+    _model = load_sbert_model(version_info["model_name"])
 
 
 def get_version_info(artifacts_dir: str) -> dict:
     """Read the persisted version/build info."""
-    raise NotImplementedError
+    with open(os.path.join(artifacts_dir, "version.json")) as f:
+        return json.load(f)
 
 
 def get_wine_by_id(wine_id: int) -> dict:
     """Look up a single wine's metadata by id. Requires load_artifacts() to have been called."""
-    raise NotImplementedError
+    if _metadata is None:
+        raise RuntimeError("Artifacts not loaded. Call load_artifacts() first.")
+
+    row = _metadata[_metadata["wine_id"] == wine_id]
+    if row.empty:
+        return None
+    return row.iloc[0].to_dict()
 
 
 if __name__ == "__main__":
-    pass
+    from data_engineering import run_pipeline
+
+    df = run_pipeline("winemag-data-130k-v2.csv")
+    build_model(df, artifacts_dir="artifacts")
+    print("Model artifacts saved to ./artifacts")
