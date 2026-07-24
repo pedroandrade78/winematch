@@ -331,6 +331,6 @@ def get_wine_by_id(wine_id: int) -> dict:
 if __name__ == "__main__":
     from data_engineering import run_pipeline
 
-    df = run_pipeline("winemag-data-130k-v2.csv")
+    df = run_pipeline("raw_data/winemag-data-130k-v2.csv")
     build_model(df, artifacts_dir="artifacts")
     print("Model artifacts saved to ./artifacts")
