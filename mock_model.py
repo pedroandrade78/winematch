@@ -29,3 +29,9 @@ def get_wine_by_id(wine_id: int):
 
 def get_version_info(artifacts_dir: str) -> dict:
     return {"version": "mock", "model_name": "mock-sbert"}
+
+if __name__ == "__main__":
+
+    result = recommend("Ornellaia 2014 Le Volte Red + low price", top_k=2, filters={"price_max": 50})
+    print("Mock recommend() result:")
+    print(result)

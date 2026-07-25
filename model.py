@@ -302,13 +302,12 @@ def load_artifacts(artifacts_dir: str) -> None:
     """Load FAISS index, metadata table, and SBERT model into module-level state for serving."""
     global _index, _metadata, _model
 
-    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
-    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
-
     with open(os.path.join(artifacts_dir, "version.json")) as f:
         version_info = json.load(f)
 
     _model = load_sbert_model(version_info["model_name"])
+    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
+    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
 
 
 def get_version_info(artifacts_dir: str) -> dict:
