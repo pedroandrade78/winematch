@@ -25,12 +25,13 @@ import json
 import os
 import re
 
-import faiss
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
+import faiss
 
-MODEL_NAME = "all-MiniLM-L6-v2"
+
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 # in-memory state, populated by load_artifacts()
 _index = None
@@ -69,7 +70,7 @@ MODIFIER_BLEND_WEIGHT = 0.35  # how much the semantic modifier shifts the query 
 
 def load_sbert_model(model_name: str = MODEL_NAME) -> SentenceTransformer:
     """Load a pretrained sentence-transformers model."""
-    return SentenceTransformer(model_name)
+    return SentenceTransformer(model_name, local_files_only=True)
 
 
 def generate_embeddings(texts: pd.Series, model: SentenceTransformer) -> np.ndarray:
@@ -302,14 +303,20 @@ def load_artifacts(artifacts_dir: str) -> None:
     """Load FAISS index, metadata table, and SBERT model into module-level state for serving."""
     global _index, _metadata, _model
 
-    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
-    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
-
     with open(os.path.join(artifacts_dir, "version.json")) as f:
         version_info = json.load(f)
 
     _model = load_sbert_model(version_info["model_name"])
+    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
+    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
 
+def load_local_artifacts(artifacts_dir: str) -> None:
+    """Load FAISS index, metadata table, and SBERT model into module-level state for serving."""
+
+
+    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
+    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
+    return _index, _metadata
 
 def get_version_info(artifacts_dir: str) -> dict:
     """Read the persisted version/build info."""

@@ -1,0 +1,54 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+winematch-env/
+
+# pyenv
+.python-version
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Environment/secrets
+.env
+.env.*
+
+# Docker itself (no need to copy these into the image)
+Dockerfile
+.dockerignore
+
+# Logs
+*.log
+
+# Streamlit cache
+.streamlit/
+
+# Test/coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Large data files (uncomment/adjust if your artifacts or datasets live in-repo and are large)
+# artifacts/
+# *.csv
+# *.parquet
