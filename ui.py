@@ -9,7 +9,26 @@ import os
 import requests
 import streamlit as st
 
-API_URL = https://winematch-v2-485046883553.europe-west1.run.app
+API_URL = "https://winematch-v2-485046883553.europe-west1.run.app"
+
+def get_api_url() -> str:
+    """Get API URL from Streamlit secrets (cloud) or env var (local), with production fallback."""
+    if "API_URL" in st.secrets:
+        return st.secrets["API_URL"]
+    return os.environ.get("API_URL", "https://winematch-v2-485046883553.europe-west1.run.app")
+
+
+API_URL = get_api_url()
+
+
+def call_recommend_api(query: str, top_k: int = 5, filters: dict = None):
+    """Call the FastAPI /recommend endpoint and return results."""
+    payload = {"query": query, "top_k": top_k}
+    if filters:
+        payload["filters"] = filters
+    response = requests.post(f"{API_URL}/recommend", json=payload, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
 def call_recommend_api(query: str, top_k: int = 5, filters: dict = None):
