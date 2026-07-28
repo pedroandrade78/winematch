@@ -9,7 +9,7 @@ import os
 import requests
 import streamlit as st
 
-API_URL = os.environ.get("API_URL", "http://localhost:8000")
+API_URL = os.environ.get("API_URL", "https://winematch-v2-485046883553.europe-west1.run.app")
 
 
 def call_recommend_api(query: str, top_k: int = 5, filters: dict = None):
