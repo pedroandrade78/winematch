@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+.env
+.envrc
+raw_data
+*.egg-info
+frontend
+README.md

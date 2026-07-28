@@ -1,0 +1,5 @@
+IMAGE=winematch-v1
+GCP_PROJECT=my-gcp-project
+GCP_REGION=europe-west1
+ARTIFACTSREPO=winematch_repo
+MEMORY=2Gi

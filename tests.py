@@ -285,14 +285,14 @@ def test_get_wine_by_id(monkeypatch, clean_metadata):
 
 @pytest.fixture
 def api_client(loaded_model_with_style, monkeypatch):
-    import api  # import here so monkeypatching model happens before startup logic runs
+    import _api  # import here so monkeypatching model happens before startup logic runs
 
     monkeypatch.setattr(
         model, "get_version_info",
         lambda artifacts_dir: {"model_name": "fake", "num_wines": 3, "embedding_dim": 4},
     )
-    api.app.router.on_startup.clear()  # skip real artifact loading from disk
-    return TestClient(api.app)
+    _api.app.router.on_startup.clear()  # skip real artifact loading from disk
+    return TestClient(_api.app)
 
 
 def test_recommend_endpoint_with_style_modifier(api_client):
