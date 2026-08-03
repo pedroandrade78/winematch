@@ -20,7 +20,7 @@ Modifiers are handled two ways:
     search is naturally pulled toward wines whose descriptions match
     that style. No fixed vocabulary needed for this part at all.
 """
-
+import difflib
 import json
 import os
 import re
@@ -170,6 +170,37 @@ def parse_query(raw_query: str):
     return identifier, modifiers
 
 
+
+MAX_RESULTS_PER_WINERY = 2  # cap so one winery/vineyard doesn't fill the whole results list
+
+
+def diversify_by_winery(candidates: pd.DataFrame, top_k: int, max_per_winery: int = MAX_RESULTS_PER_WINERY) -> pd.DataFrame:
+    """
+    Keep results in similarity order, but cap how many wines from the same
+    winery can appear, so results feel varied instead of e.g. 5 vintages of
+    the same wine. Candidates must already be sorted by relevance.
+    """
+    if "winery" not in candidates.columns:
+        return candidates.head(top_k)
+
+    counts = {}
+    keep_rows = []
+    for _, row in candidates.iterrows():
+        winery = row.get("winery")
+        seen = counts.get(winery, 0)
+        if seen < max_per_winery:
+            keep_rows.append(row)
+            counts[winery] = seen + 1
+        if len(keep_rows) >= top_k:
+            break
+
+    if not keep_rows:
+        return candidates.head(top_k)
+    return pd.DataFrame(keep_rows)
+
+
+
+
 def apply_filters(candidates: pd.DataFrame, filters: dict) -> pd.DataFrame:
     """Apply optional hard filters: price_min, price_max, variety, country, min_points."""
     if not filters:
@@ -188,6 +219,44 @@ def apply_filters(candidates: pd.DataFrame, filters: dict) -> pd.DataFrame:
         df = df[df["points"] >= filters["min_points"]]
 
     return df
+
+
+FUZZY_MATCH_CUTOFF = 0.6  # 0-1, higher = stricter. Tolerates small typos, not wildly different text.
+
+
+def _fuzzy_title_match(identifier: str):
+    """
+    Find the closest wine title to `identifier` using approximate string
+    matching (no extra dependency -- uses Python's built-in difflib), so a
+    small typo like "Onelaia" still finds "Ornellaia". Returns the row
+    position in _metadata, or None if nothing is close enough.
+    """
+    titles = _metadata["title"].astype(str)
+    close = difflib.get_close_matches(identifier.lower(), titles.str.lower(), n=1, cutoff=FUZZY_MATCH_CUTOFF)
+    if not close:
+        return None
+
+    match_pos = titles.str.lower().tolist().index(close[0])
+    return match_pos
+
+
+def _pick_best_title_match(identifier: str, title_matches: pd.DataFrame) -> int:
+    """
+    When several titles contain `identifier` as a substring, picking the
+    first one by row position is arbitrary (depends on original CSV order,
+    not relevance). Instead, prefer the title whose length is closest to
+    the identifier's -- e.g. searching "Ornellaia 2014" should prefer an
+    exact-ish title match over a much longer, less specific one. Ties are
+    broken by keeping the first occurrence (stable).
+    Returns a row position (not wine_id).
+    """
+    lengths = title_matches["title"].str.len()
+    closeness = (lengths - len(identifier)).abs()
+    best_local_pos = closeness.values.argmin()
+    return int(title_matches.index[best_local_pos])
+
+
+
 
 
 def _resolve_query_vector(identifier: str, semantic_modifier: str = None):
@@ -264,11 +333,13 @@ def recommend(query: str, top_k: int = 5, filters: dict = None) -> pd.DataFrame:
     candidates = apply_filters(candidates, combined_filters)
 
     if modifiers["sort_by"]:
+        # Explicit sort requested (e.g. "low price") -- respect it exactly,
+        # diversification would fight against what the user asked for.
         candidates = candidates.sort_values(modifiers["sort_by"], ascending=modifiers["ascending"])
-    else:
-        candidates = candidates.sort_values("similarity", ascending=False)
+        return candidates.head(top_k)
 
-    return candidates.head(top_k)
+    candidates = candidates.sort_values("similarity", ascending=False)
+    return diversify_by_winery(candidates, top_k)
 
 
 # ---------------------------------------------------------------------
@@ -313,15 +384,30 @@ def load_artifacts(artifacts_dir: str) -> None:
 def load_local_artifacts(artifacts_dir: str) -> None:
     """Load FAISS index, metadata table, and SBERT model into module-level state for serving."""
 
-
     _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
     _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
     return _index, _metadata
+
+
 
 def get_version_info(artifacts_dir: str) -> dict:
     """Read the persisted version/build info."""
     with open(os.path.join(artifacts_dir, "version.json")) as f:
         return json.load(f)
+
+
+def search_titles(query: str, limit: int = 8) -> list:
+    """
+    Return up to `limit` wine titles that contain `query` (case-insensitive),
+    for a type-ahead autocomplete box. Requires load_artifacts() to have
+    been called.
+    """
+    if _metadata is None:
+        raise RuntimeError("Artifacts not loaded. Call load_artifacts() first.")
+
+    matches = _metadata[_metadata["title"].str.contains(query, case=False, na=False)]
+    return matches["title"].head(limit).tolist()
+
 
 
 def get_wine_by_id(wine_id: int) -> dict:

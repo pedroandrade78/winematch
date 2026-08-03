@@ -11,4 +11,11 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 
 COPY . .
 
-CMD uvicorn api:app --host 0.0.0.0 --port $PORT
+#CMD uvicorn api:app --host 0.0.0.0 --port $PORT
+
+
+#local
+CMD uvicorn api:app --reload --host 0.0.0.0
+
+#gcp (cloud run) deployment
+# CMD uvicorn api:app --reload --host 0.0.0.0 --port $PORT
