@@ -197,21 +197,56 @@ def parse_query(raw_query: str):
     return identifier, modifiers
 
 
+_NO_FILTER_VALUES = {"", "any", "all", "none", "n/a"}
+
+
+def _is_real_filter_value(value) -> bool:
+    """
+    True if `value` represents an actual filter the user picked -- as opposed
+    to a placeholder a UI widget sends when nothing was selected, like "Any"
+    for an untouched dropdown. Treating those as real would filter down to
+    zero rows (nothing has variety == "Any") instead of meaning "no filter".
+    """
+    return value is not None and str(value).strip().lower() not in _NO_FILTER_VALUES
+
+
+def _normalize_filters(filters: dict) -> dict:
+    """Keep only the filters that are actually active, dropping placeholders/None."""
+    if not filters:
+        return {}
+
+    cleaned = {}
+    if filters.get("price_min") is not None:
+        cleaned["price_min"] = filters["price_min"]
+    if filters.get("price_max") is not None:
+        cleaned["price_max"] = filters["price_max"]
+    if filters.get("min_points") is not None:
+        cleaned["min_points"] = filters["min_points"]
+    if _is_real_filter_value(filters.get("variety")):
+        cleaned["variety"] = str(filters["variety"]).strip()
+    if _is_real_filter_value(filters.get("country")):
+        cleaned["country"] = str(filters["country"]).strip()
+    return cleaned
+
+
 def apply_filters(candidates: pd.DataFrame, filters: dict) -> pd.DataFrame:
     """Apply optional hard filters: price_min, price_max, variety, country, min_points."""
+    filters = _normalize_filters(filters)
     if not filters:
         return candidates
 
     df = candidates
-    if filters.get("price_min") is not None:
+    if "price_min" in filters:
         df = df[df["price"] >= filters["price_min"]]
-    if filters.get("price_max") is not None:
+    if "price_max" in filters:
         df = df[df["price"] <= filters["price_max"]]
-    if filters.get("variety"):
-        df = df[df["variety"].str.lower() == filters["variety"].lower()]
-    if filters.get("country"):
-        df = df[df["country"].str.lower() == filters["country"].lower()]
-    if filters.get("min_points") is not None:
+    if "variety" in filters:
+        target = filters["variety"].lower()
+        df = df[df["variety"].str.strip().str.lower() == target]
+    if "country" in filters:
+        target = filters["country"].lower()
+        df = df[df["country"].str.strip().str.lower() == target]
+    if "min_points" in filters:
         df = df[df["points"] >= filters["min_points"]]
 
     return df
@@ -277,7 +312,7 @@ def recommend(query: str, top_k: int = 5, filters: dict = None) -> pd.DataFrame:
     identifier, modifiers = parse_query(query)
     query_vector, exclude_id = _resolve_query_vector(identifier, modifiers["semantic_modifier"])
 
-    combined_filters = {**modifiers["hard_filters"], **(filters or {})}
+    combined_filters = _normalize_filters({**modifiers["hard_filters"], **(filters or {})})
 
     if combined_filters:
         # A hard filter (country, variety, price, points...) is active. Filtering
