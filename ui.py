@@ -5,15 +5,18 @@ Run with: streamlit run ui.py
 """
 
 import os
+import re
 
 import requests
 import streamlit as st
 
-API_URL = os.environ.get("API_URL", "https://winematch-v3-485046883553.europe-west1.run.app")
+API_URL = os.environ.get("API_URL", "https://winematch-v2-485046883553.europe-west1.run.app")
 
 NAVY = "#1B2A4A"
 RED_WINE_COLOR = "#8B1E3F"
 WHITE_WINE_COLOR = "#B8860B"  # muted gold, not literally "white"
+ROSE_WINE_COLOR = "#D46A8C"  # dusty rose/pink
+SPARKLING_WINE_COLOR = "#7C93A3"  # cool silvery-blue, evokes bubbles/effervescence
 NEUTRAL_COLOR = "#4A4A4A"
 
 RED_VARIETIES = {
@@ -25,6 +28,111 @@ WHITE_VARIETIES = {
     "chardonnay", "sauvignon blanc", "riesling", "pinot grigio",
     "pinot gris", "gewurztraminer", "viognier", "chenin blanc",
     "moscato", "white blend", "gruner veltliner",
+}
+
+# Larger, dataset-derived keyword lists used only for card-title colouring
+# (get_variety_color), covering 4 categories instead of 2. Kept separate
+# from RED_VARIETIES/WHITE_VARIETIES above, which back the sidebar's
+# "Variety" filter dropdown and must stay a short, curated list of exact,
+# filterable values -- these ones are for substring matching against any
+# variety string returned by the API, and cover ~99.97% of wines_clean.csv.
+SPARKLING_COLOR_VARIETIES = {
+    "sparkling", "champagne", "prosecco", "glera", "cava",
+    "cremant", "crémant", "frizzante", "asti",
+}
+
+ROSE_COLOR_VARIETIES = {
+    "rosé", "rose", "rosado", "rosato", "moscato rosa", "rosenmuskateller",
+}
+
+RED_COLOR_VARIETIES = {
+    # major international reds
+    "pinot noir", "pinot nero", "spätburgunder", "cabernet sauvignon", "cabernet franc",
+    "cabernet", "merlot", "syrah", "shiraz", "malbec", "zinfandel", "primitivo",
+    "sangiovese", "tempranillo", "tinta roriz", "tinto fino", "tinto del pais",
+    "tinto velasco", "tinta del pais", "tinta del toro", "tinta de toro",
+    "grenache", "garnacha", "cannonau", "nebbiolo", "barbera", "montepulciano",
+    "nero d'avola", "nero di troia", "aglianico", "touriga nacional", "touriga franca",
+    "touriga", "baga", "tannat", "carignan", "carignane", "carignano", "cariñena",
+    "mourvèdre", "monastrell", "mataro", "gamay", "dolcetto", "corvina", "rondinella",
+    "molinara", "negroamaro", "blaufränkisch", "kékfrankos", "kekfrankos", "frankovka",
+    "zweigelt", "xinomavro", "agiorgitiko", "mavrud", "mavrodaphne", "mavrokalavryta",
+    "mavrotragano", "mavroudi", "saperavi", "carmenère", "pinotage", "lagrein",
+    "teroldego", "refosco", "marzemino", "freisa", "grignolino", "dornfelder",
+    "lemberger", "st. laurent", "portugieser", "mencía", "graciano", "bobal",
+    "alicante", "castelão", "trincadeira", "jaen", "aragonez", "aragonês", "ramisco",
+    "tinta barroca", "tinta cao", "tinta madeira", "tinta miúda", "tinta negra mole",
+    "vranac", "vranec", "plavac mali", "babić", "teran", "kadarka", "blauburger",
+    "blauburgunder", "frühburgunder", "früburgunder", "schiava", "lambrusco",
+    "rara neagra", "susumaniello", "gaglioppo", "sagrantino", "ciliegiolo",
+    "colorino", "canaiolo", "pugnitello", "prugnolo gentile", "malvasia nera",
+    "petite sirah", "petite verdot", "petit verdot", "red blend", "claret",
+    "meritage", "g-s-m", "bordeaux-style red", "rhône-style red", "provence red",
+    "austrian red", "portuguese red", "port", "trollinger", "bonarda",
+    "nerello mascalese", "nerello cappuccio", "pinot meunier", "cinsault",
+    "frappato", "charbono", "negrette", "norton", "baco noir", "prieto picudo",
+    "alfrocheiro", "brachetto", "piedirosso", "kalecik karasi", "raboso",
+    "mondeuse", "uva di troia", "counoise", "ruché", "trepat", "okuzgozu",
+    "feteasca neagra", "gragnano", "chambourcin", "jacquez", "chancellor",
+    "marquette", "st. vincent", "marselan", "mazuelo", "mansois", "duras",
+    "braucol", "sirica", "sciaccerellu", "nielluciu", "melnik", "kotsifali",
+    "tsapournakos", "papaskarasi", "karasakiz", "boğazkere", "çalkarası",
+    "žilavka", "sousão", "souzao", "vinhão", "tinta francisca", "tinta amarela",
+    "tinta fina", "tintilia", "morava", "listán negro", "grolleau", "groppello",
+    "magliocco", "manzoni", "perricone", "poulsard", "trousseau", "abouriou",
+    "cesanese", "durif", "alvarelhão", "aleatico", "albarossa", "argaman",
+    "bastardo", "blatina", "bovale", "carcajolu", "carineña", "casavecchia",
+    "centesimino", "chelois", "fer servadou", "forcallà", "franconia", "gamza",
+    "mandilaria", "mission", "país", "monica", "otskhanuri sapere", "ojaleshi",
+    "parraleta", "pignolo", "portuguiser", "prunelard", "rebo", "rufete",
+    "schwartzriesling", "valdiguié", "kuntra", "vespolina",
+    # generic red/black colour markers used as bare words in this dataset
+    "noir", "nero", "nera", "rosso", "tinta", "tinto", "black", "negro", "kara",
+}
+
+WHITE_COLOR_VARIETIES = {
+    "chardonnay", "sauvignon blanc", "sauvignon", "riesling", "pinot grigio",
+    "pinot gris", "pinot blanc", "pinot bianco", "gewürztraminer", "gewurztraminer",
+    "traminer", "traminette", "viognier", "chenin blanc", "moscato", "muscat",
+    "muscatel", "moscatel", "white blend", "gruner veltliner", "grüner veltliner",
+    "veltliner", "albariño", "albarino", "verdejo", "vermentino", "trebbiano",
+    "garganega", "cortese", "falanghina", "fiano", "semillon", "sémillon",
+    "torrontés", "grecanico", "grechetto", "greco", "godello", "arinto",
+    "encruzado", "loureiro", "arneis", "friulano", "malvasia", "verdicchio",
+    "vernaccia", "picpoul", "picolit", "colombard", "ugni blanc", "folle blanche",
+    "chasselas", "silvaner", "sylvaner", "müller-thurgau", "kerner", "scheurebe",
+    "furmint", "hárslevelü", "welschriesling", "graševina", "grasevina",
+    "assyrtiko", "assyrtico", "roditis", "malagousia", "malagouzia", "vidal",
+    "vidal blanc", "seyval blanc", "chardonel", "cayuga", "niagara", "diamond",
+    "catawba", "symphony", "sacy", "elbling", "kisi", "rkatsiteli", "mtsvane",
+    "chinuri", "carricante", "insolia", "inzolia", "catarratto", "grillo",
+    "zibibbo", "moscato giallo", "cerceal", "fernão pires", "antão vaz", "gouveio",
+    "rabigato", "viosinho", "loureiro-arinto", "azal", "avesso", "trajadura",
+    "bical", "maria gomes", "malvar", "airen", "verdil", "xarel-lo", "macabeo",
+    "treixadura", "verdelho", "verdello", "boal", "bual", "sercial", "terrantez",
+    "white port", "biancolella", "grauburgunder", "weissburgunder", "auxerrois",
+    "savagnin", "petit manseng", "gros manseng", "gros and petit manseng",
+    "melon", "viura", "turbiana", "roussanne", "marsanne", "fumé blanc",
+    "pedro ximénez", "moschofilero", "jacquère", "muskateller", "muskat",
+    "hondarrabi zuri", "rotgipfler", "passerina", "palomino", "pansa blanca",
+    "zierfandler", "tocai", "morillon", "muscadelle", "muscadine", "muscadel",
+    "nosiola", "posip", "durella", "pallagrello bianco", "sherry", "clairette",
+    "erbaluce", "favorita", "mauzac", "alvarinho", "pecorino", "ribolla gialla",
+    "tokaji", "tokay", "aligoté", "albana", "albanello", "siria", "vignoles",
+    "coda di volpe", "códega do larinho", "romorantin", "verduzzo", "rebula",
+    "robola", "torontel", "nasco", "nuragus", "pignoletto", "sauvignonasse",
+    "savatiano", "verdeca", "vespaiolo", "picapoll", "timorasso", "vitovska",
+    "vilana", "torbato", "premsal", "pigato", "narince", "nascetta", "neuburger",
+    "mantonico", "tamianka", "tamjanika", "misket", "gros plant", "edelzwicker",
+    "madeleine angevine", "irsai oliver", "rieslaner", "rivaner", "sämling",
+    "siegerrebe", "ryzlink rýnský", "thrapsathiri", "tsolikouri",
+    "tămâioasă românească", "xinisteri", "xynisteri", "yapincak", "zlahtina",
+    "marawi", "jampal", "loin de l'oeil", "moscadello", "debit", "dafni",
+    "catalanesca", "biancale", "asprinio", "athiri", "altesse", "ansonica",
+    "cococciola", "emir", "feteasca", "feteascǎ regalǎ", "paralleda",
+    "rolle", "petit courbu", "cercial", "aidani", "caprettone",
+    # generic white colour markers used as bare words in this dataset
+    "bianco", "bianca", "blanc", "blanca", "blanco", "white",
 }
 
 COMMON_VARIETIES = sorted(RED_VARIETIES | WHITE_VARIETIES)
@@ -141,14 +249,27 @@ st.markdown(
 )
 
 
+def _matches_any_variety_keyword(v: str, keywords: set) -> bool:
+    """Word-boundary substring match, so e.g. 'noir' doesn't match inside an unrelated word."""
+    return any(re.search(rf"\b{re.escape(kw)}\b", v) for kw in keywords)
+
+
 def get_variety_color(variety: str) -> str:
-    """Best-effort color classification based on variety name; falls back to neutral."""
+    """
+    Best-effort color classification based on variety name, covering 4
+    categories (checked in this priority order): sparkling, rosé, red,
+    white. Falls back to NEUTRAL_COLOR if nothing matches.
+    """
     if not variety:
         return NEUTRAL_COLOR
     v = variety.lower().strip()
-    if v in RED_VARIETIES:
+    if _matches_any_variety_keyword(v, SPARKLING_COLOR_VARIETIES):
+        return SPARKLING_WINE_COLOR
+    if _matches_any_variety_keyword(v, ROSE_COLOR_VARIETIES):
+        return ROSE_WINE_COLOR
+    if _matches_any_variety_keyword(v, RED_COLOR_VARIETIES):
         return RED_WINE_COLOR
-    if v in WHITE_VARIETIES:
+    if _matches_any_variety_keyword(v, WHITE_COLOR_VARIETIES):
         return WHITE_WINE_COLOR
     return NEUTRAL_COLOR
 
@@ -344,7 +465,7 @@ def main():
     top_k = st.slider("Number of recommendations", 1, 20, 5)
 
     if st.button("🍷 Uncork", type="primary") and query.strip():
-        with st.spinner("Finding wines... this can take a moment."):
+        with st.spinner("Finding wines... this can take a moment on first use."):
             try:
                 results = call_recommend_api(query, top_k, filters)
                 render_recommendations(results)
