@@ -25,18 +25,22 @@ import json
 import os
 import re
 
+import faiss
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
-import faiss
 
-
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+MODEL_NAME = "all-MiniLM-L6-v2"
 
 # in-memory state, populated by load_artifacts()
 _index = None
 _metadata = None
 _model = None
+
+# known country / variety values, populated by load_artifacts(), sorted longest-first
+# so e.g. "Cabernet Sauvignon" is matched before the shorter "Cabernet"
+_known_countries = []
+_known_varieties = []
 
 # Short anchor phrases used only to *classify* whether a modifier is about
 # price or rating direction (structured columns SBERT can't infer from
@@ -70,7 +74,7 @@ MODIFIER_BLEND_WEIGHT = 0.35  # how much the semantic modifier shifts the query 
 
 def load_sbert_model(model_name: str = MODEL_NAME) -> SentenceTransformer:
     """Load a pretrained sentence-transformers model."""
-    return SentenceTransformer(model_name, local_files_only=True)
+    return SentenceTransformer(model_name)
 
 
 def generate_embeddings(texts: pd.Series, model: SentenceTransformer) -> np.ndarray:
@@ -129,6 +133,21 @@ def classify_structured_modifier(modifier_text: str, threshold: float = STRUCTUR
     return None
 
 
+def _detect_known_value(modifier_text: str, known_values: list):
+    """
+    Check whether any known value (e.g. a country or grape variety from the
+    dataset) appears as a substring of modifier_text, case-insensitively.
+    known_values must be sorted longest-first so more specific matches
+    (e.g. "Cabernet Sauvignon") win over shorter ones (e.g. "Cabernet").
+    Returns the matching value exactly as stored in the metadata, or None.
+    """
+    text_lower = modifier_text.lower()
+    for value in known_values:
+        if value.lower() in text_lower:
+            return value
+    return None
+
+
 def parse_query(raw_query: str):
     """
     Split a single search-box query on '+' into:
@@ -158,6 +177,14 @@ def parse_query(raw_query: str):
     m = re.search(r"(\d+)\+?\s*points", modifier_text, re.IGNORECASE)
     if m:
         modifiers["hard_filters"]["min_points"] = int(m.group(1))
+
+    country_match = _detect_known_value(modifier_text, _known_countries)
+    if country_match:
+        modifiers["hard_filters"]["country"] = country_match
+
+    variety_match = _detect_known_value(modifier_text, _known_varieties)
+    if variety_match:
+        modifiers["hard_filters"]["variety"] = variety_match
 
     structured = classify_structured_modifier(modifier_text)
     if structured:
@@ -250,18 +277,42 @@ def recommend(query: str, top_k: int = 5, filters: dict = None) -> pd.DataFrame:
     identifier, modifiers = parse_query(query)
     query_vector, exclude_id = _resolve_query_vector(identifier, modifiers["semantic_modifier"])
 
-    fetch_k = max(top_k * 5, 20)
-    scores, indices = search_index(_index, query_vector, top_k=fetch_k)
-
-    valid = indices >= 0
-    candidates = _metadata.iloc[indices[valid]].copy()
-    candidates["similarity"] = scores[valid]
-
-    if exclude_id is not None:
-        candidates = candidates[candidates["wine_id"] != exclude_id]
-
     combined_filters = {**modifiers["hard_filters"], **(filters or {})}
-    candidates = apply_filters(candidates, combined_filters)
+
+    if combined_filters:
+        # A hard filter (country, variety, price, points...) is active. Filtering
+        # AFTER a top-k FAISS search would silently drop everything if none of the
+        # top ~20 nearest neighbours happen to match the filter. Instead, narrow
+        # the candidate pool first (on the full dataset), then rank only that pool
+        # by similarity -- this is an exhaustive (brute-force) similarity search
+        # over the filtered rows, which is fine for filtered subsets of this size.
+        pool = apply_filters(_metadata, combined_filters)
+        if exclude_id is not None:
+            pool = pool[pool["wine_id"] != exclude_id]
+
+        if pool.empty:
+            candidates = pool.copy()
+            candidates["similarity"] = pd.Series(dtype="float32")
+        else:
+            row_positions = pool.index.to_numpy()
+            vectors = np.vstack(
+                [_index.reconstruct(int(pos)) for pos in row_positions]
+            ).astype("float32")
+            query_vec = np.asarray(query_vector, dtype="float32")
+            similarities = vectors @ query_vec
+
+            candidates = pool.copy()
+            candidates["similarity"] = similarities
+    else:
+        fetch_k = max(top_k * 5, 20)
+        scores, indices = search_index(_index, query_vector, top_k=fetch_k)
+
+        valid = indices >= 0
+        candidates = _metadata.iloc[indices[valid]].copy()
+        candidates["similarity"] = scores[valid]
+
+        if exclude_id is not None:
+            candidates = candidates[candidates["wine_id"] != exclude_id]
 
     if modifiers["sort_by"]:
         candidates = candidates.sort_values(modifiers["sort_by"], ascending=modifiers["ascending"])
@@ -301,22 +352,23 @@ def save_artifacts(index: faiss.Index, metadata: pd.DataFrame, artifacts_dir: st
 
 def load_artifacts(artifacts_dir: str) -> None:
     """Load FAISS index, metadata table, and SBERT model into module-level state for serving."""
-    global _index, _metadata, _model
+    global _index, _metadata, _model, _known_countries, _known_varieties
+
+    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
+    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
 
     with open(os.path.join(artifacts_dir, "version.json")) as f:
         version_info = json.load(f)
 
     _model = load_sbert_model(version_info["model_name"])
-    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
-    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
 
-def load_local_artifacts(artifacts_dir: str) -> None:
-    """Load FAISS index, metadata table, and SBERT model into module-level state for serving."""
+    _known_countries = sorted(
+        _metadata["country"].dropna().unique().tolist(), key=len, reverse=True
+    )
+    _known_varieties = sorted(
+        _metadata["variety"].dropna().unique().tolist(), key=len, reverse=True
+    )
 
-
-    _metadata = pd.read_parquet(os.path.join(artifacts_dir, "metadata.parquet"))
-    _index = faiss.read_index(os.path.join(artifacts_dir, "index.faiss"))
-    return _index, _metadata
 
 def get_version_info(artifacts_dir: str) -> dict:
     """Read the persisted version/build info."""

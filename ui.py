@@ -38,6 +38,8 @@ COUNTRY_OVERRIDES = {
     "uae": "UAE",
 }
 
+N_CARD_COLUMNS = 3  # how many wine cards sit side by side per row
+
 st.set_page_config(page_title="WineMatch", page_icon="🍷", layout="wide")
 
 st.markdown(
@@ -53,7 +55,6 @@ st.markdown(
     h1, h2, h3, h4 {
         font-family: 'Lora', serif !important;
     }
-
     label[data-testid="stWidgetLabel"] p {
         font-size: 1.3rem !important;
         font-weight: 500 !important;
@@ -83,6 +84,57 @@ st.markdown(
     div[data-testid="stExpander"] {
         margin-bottom: 1.5rem;
     }
+    section[data-testid="stSidebar"] {
+        background-color: #FBF7F2;
+        border-right: 1px solid rgba(27, 42, 74, 0.12);
+    }
+    section[data-testid="stSidebar"] h2 {
+        color: #1B2A4A;
+    }
+    div[data-testid="stHorizontalBlock"] {
+        align-items: stretch;
+    }
+    div[data-testid="column"] {
+        display: flex;
+        flex-direction: column;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(div[data-testid="stVerticalBlock"]) {
+        height: 100%;
+        box-sizing: border-box;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] > div > div[data-testid="stVerticalBlock"] {
+        height: 100%;
+        min-height: 300px;
+        display: flex;
+        flex-direction: column;
+    }
+    .wine-title {
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        line-height: 1.25;
+        margin-bottom: 0.15rem;
+    }
+    .wine-meta {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: block;
+    }
+    .header-spacer {
+        margin-bottom: 2.25rem;
+    }
+    .glass-rating {
+        letter-spacing: 0.15em;
+    }
+    .glass-rating .filled {
+        opacity: 1;
+    }
+    .glass-rating .empty {
+        opacity: 0.22;
+        filter: grayscale(100%);
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -101,11 +153,13 @@ def get_variety_color(variety: str) -> str:
     return NEUTRAL_COLOR
 
 
-def points_to_stars(points) -> str:
+def points_to_glasses(points) -> str:
     """
-    Map an 80-100 point score to a 1-5 star display, using buckets tuned to
-    this dataset's actual distribution (most wines score 85-92), so the
-    common range spreads across more of the star scale.
+    Map an 80-100 point score to a 1-5 wine-glass display (matching the 🍷
+    used in the header), using buckets tuned to this dataset's actual
+    distribution (most wines score 85-92), so the common range spreads
+    across more of the scale. Returns HTML: filled glasses at full opacity,
+    unfilled glasses dimmed.
     """
     try:
         points = float(points)
@@ -113,17 +167,21 @@ def points_to_stars(points) -> str:
         return ""
 
     if points >= 95:
-        stars = 5
+        filled = 5
     elif points >= 90:
-        stars = 4
+        filled = 4
     elif points >= 87:
-        stars = 3
+        filled = 3
     elif points >= 84:
-        stars = 2
+        filled = 2
     else:
-        stars = 1
+        filled = 1
 
-    return "★" * stars + "☆" * (5 - stars)
+    glasses = "".join(
+        f"<span class='{'filled' if i < filled else 'empty'}'>🍷</span>"
+        for i in range(5)
+    )
+    return f"<span class='glass-rating'>{glasses}</span>"
 
 
 def to_title_case(text: str) -> str:
@@ -161,16 +219,20 @@ def call_recommend_api(query: str, top_k: int = 5, filters: dict = None):
     return response.json()
 
 
-def render_filters_form() -> dict:
+def render_filters_sidebar() -> dict:
     """
-    Render an optional 'Advanced filters' section. Each filter is behind a
-    checkbox so an untouched field is genuinely omitted from the request,
-    rather than sending a misleading 0/blank value as a real constraint.
-    Returns a filters dict with only the enabled fields set (or {} if none).
+    Render the filters in a sidebar that's always visible. Each filter is
+    behind a checkbox so an untouched field is genuinely omitted from the
+    request, rather than sending a misleading 0/blank value as a real
+    constraint. Returns a filters dict with only the enabled fields set
+    (or {} if none).
     """
     filters = {}
 
-    with st.expander("Advanced filters (optional)"):
+    with st.sidebar:
+        st.markdown(f"<h2 style='color:{NAVY};'>🔎 Filters</h2>", unsafe_allow_html=True)
+        st.caption("Narrow down your recommendations (all optional).")
+
         use_price = st.checkbox("Filter by price range")
         if use_price:
             col1, col2 = st.columns(2)
@@ -198,61 +260,90 @@ def render_filters_form() -> dict:
     return filters
 
 
+def format_price(price) -> str:
+    """Format a price with no decimal places (rounds to the nearest dollar)."""
+    try:
+        return f"{round(float(price)):,}"
+    except (TypeError, ValueError):
+        return str(price) if price is not None else "?"
+
+
 def render_wine_card(wine: dict):
-    """Render a single wine as a color-coded card with a star rating."""
+    """Render a single wine as a color-coded card with a wine-glass rating."""
     color = get_variety_color(wine.get("variety", ""))
-    stars = points_to_stars(wine.get("points"))
+    glasses = points_to_glasses(wine.get("points"))
     title = to_title_case(wine.get("title", "Unknown wine"))
     variety = to_title_case(wine.get("variety", ""))
     country = to_title_case_country(wine.get("country", ""))
     description = to_sentence_case(wine.get("description", ""))
+    price = format_price(wine.get("price"))
 
     with st.container(border=True):
         st.markdown(
-            f"<h4 style='color:{color}; margin-bottom:0;'>{title}</h4>",
+            f"<h4 class='wine-title' style='color:{color};' title='{title}'>{title}</h4>",
             unsafe_allow_html=True,
         )
         st.markdown(
+            f"<span class='wine-meta'>"
             f"<span style='color:{color};'>**{variety}**</span> · "
-            f"{country} · ${wine.get('price', '?')} · "
-            f"<span style='color:{color};'>{stars}</span> ({wine.get('points', '?')} pts)",
+            f"{country} · ${price}</span>"
+            f"<span class='wine-meta'>{glasses} "
+            f"<span style='color:{color};'>({wine.get('points', '?')} pts)</span></span>",
             unsafe_allow_html=True,
         )
-        st.write(description)
+        if description:
+            with st.expander("Read description"):
+                st.write(description)
         if "similarity" in wine:
-            st.caption(f"Match score: {wine['similarity']:.3f} · id: {wine.get('wine_id')}")
+            try:
+                match_pct = f"{float(wine['similarity']) * 100:.0f}%"
+            except (TypeError, ValueError):
+                match_pct = wine["similarity"]
+            st.caption(f"Match score: {match_pct} · id: {wine.get('wine_id')}")
 
 
 def render_recommendations(results):
-    """Display recommended wines as cards."""
+    """Display recommended wines as cards, laid out side by side."""
     if not results:
         st.info("No matching wines found. Try a different name/id, property, or loosen your filters.")
         return
-    for wine in results:
-        render_wine_card(wine)
+
+    for row_start in range(0, len(results), N_CARD_COLUMNS):
+        row_wines = results[row_start:row_start + N_CARD_COLUMNS]
+        cols = st.columns(N_CARD_COLUMNS)
+        for col, wine in zip(cols, row_wines):
+            with col:
+                render_wine_card(wine)
 
 
 def main():
+    filters = render_filters_sidebar()
+
     st.markdown(
-        f"<h1 style='color:{NAVY};'>🍷 WineMatch</h1>",
+        f"<h1 style='color:{NAVY}; text-align:center;'>🍷 WineMatch</h1>",
         unsafe_allow_html=True,
     )
     st.markdown(
-        "<p style='font-style: italic; font-size: 1.05em;'>"
-        "Enter a wine's name or id, optionally followed by a <code>+</code> and a quality you're after — "
+        "<p class='header-spacer' style='text-align:center; font-size:1.15em; font-weight:500;'>"
+        "Describe what you're craving, or point to a wine you love — we'll pour the closest match."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='font-style: italic; font-size: 1.05em; text-align:center;'>"
+        "Enter a wine's name, optionally followed by a <code>+</code> and a quality you're after — "
         "price or rating (<em>low price</em>, <em>high rating</em>), or style (<em>sweet</em>, "
         "<em>fruity</em>, <em>high alcohol</em>). For example: "
         "<em>Ornellaia 2014 Le Volte Red + sweet and fruity</em>, or <em>109 + low price</em>. "
-        "For precise constraints, such as an exact price range, use <strong>Advanced filters</strong> below."
+        "For precise constraints, such as an exact price range, use the <strong>Filters</strong> in the sidebar."
         "</p>",
         unsafe_allow_html=True,
     )
 
     query = st.text_input("Please enter your search here:", placeholder="Ornellaia 2014 Le Volte Red + sweet and fruity")
     top_k = st.slider("Number of recommendations", 1, 20, 5)
-    filters = render_filters_form()
 
-    if st.button("Find similar wines", type="primary") and query.strip():
+    if st.button("🍷 Uncork", type="primary") and query.strip():
         with st.spinner("Finding wines... this can take a moment on first use."):
             try:
                 results = call_recommend_api(query, top_k, filters)
