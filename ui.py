@@ -465,7 +465,7 @@ def main():
     top_k = st.slider("Number of recommendations", 1, 20, 5)
 
     if st.button("🍷 Uncork", type="primary") and query.strip():
-        with st.spinner("Finding wines... this can take a moment on first use."):
+        with st.spinner("Finding wines... this can take a moment."):
             try:
                 results = call_recommend_api(query, top_k, filters)
                 render_recommendations(results)
