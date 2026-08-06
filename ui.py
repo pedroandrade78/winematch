@@ -10,7 +10,7 @@ import re
 import requests
 import streamlit as st
 
-API_URL = os.environ.get("API_URL", "https://winematch-v3-485046883553.europe-west1.run.app")
+API_URL = os.environ.get("API_URL", "https://winematch-v4-485046883553.europe-west1.run.app")
 
 NAVY = "#1B2A4A"
 RED_WINE_COLOR = "#8B1E3F"
